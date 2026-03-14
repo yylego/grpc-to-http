@@ -4,6 +4,10 @@ Convert a TypeScript gRPC client into an HTTP client using Axios.
 
 ---
 
+![grpc-to-http-overview](assets/grpc-to-http-overview.svg)
+
+---
+
 ## CHINESE README
 
 [中文说明](README.zh.md)
@@ -15,16 +19,16 @@ Convert a TypeScript gRPC client into an HTTP client using Axios.
 - Automatic path param extraction and rewriting
 - GET/POST/PUT/DELETE methods via `google.api.http` annotations
 - Snake_case to camelCase param name auto-conversion
-- Lightweight with minimal dependencies
+- Lightweight with minimum dependencies
 
-## How It Works
+## Design
 
 When using [protobuf-ts](https://github.com/timostamm/protobuf-ts) to generate TypeScript gRPC clients, the generated code uses `stackIntercept` and `UnaryCall` as gRPC mechanisms. This package provides `executeGrpcToHttp` and `GrpcToHttpPromise` as drop-in replacements that route requests through HTTP/REST endpoints using Axios instead.
 
 The conversion reads `google.api.http` annotations from `.proto` files to decide:
 - HTTP method (GET/POST/PUT/DELETE)
 - URL path (with param substitution)
-- Request body handling
+- Request payload handling
 
 This is most convenient when the backend (e.g., [Kratos](https://github.com/go-kratos/kratos)) exposes both gRPC and HTTP endpoints, and the frontend uses HTTP without configuring a gRPC bridge.
 
@@ -41,11 +45,11 @@ npm install @yylego/grpc-to-http
 
 ## Usage
 
-Import the functions in the protobuf-ts generated client files:
+Import from the package:
 
 ```typescript
-import { executeGrpcToHttp } from '@yylego/grpc-to-http/src/grpc-to-http';
-import type { GrpcToHttpPromise } from '@yylego/grpc-to-http/src/grpc-to-http';
+import { executeGrpcToHttp, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import type { GrpcToHttpPromise } from '@yylego/grpc-to-http';
 ```
 
 ### API
@@ -64,10 +68,52 @@ Execute a gRPC request via HTTP. Arguments:
 
 Returns `GrpcToHttpPromise<I, O>` — a Promise that resolves to an Axios response.
 
+**`grpcToHttpConfig`**
+
+Configuration object. Supported options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `debug` | `boolean` | `false` | When `true`, prints request details to console |
+
+**`GrpcToHttpException`**
+
+Custom exception class thrown when conversion encounters issues (e.g., missing HTTP method annotation, missing path parameters). Use `instanceof` to distinguish from network exceptions:
+
+```typescript
+import { GrpcToHttpException } from '@yylego/grpc-to-http';
+
+try {
+    const response = await client.sayHello({ name: 'World' }, options);
+} catch (e) {
+    if (e instanceof GrpcToHttpException) {
+        console.log('Conversion exception:', e.message);
+    } else {
+        console.log('Network exception:', e);
+    }
+}
+```
+
+**Debug Output**
+
+When `grpcToHttpConfig.debug = true`, two lines are printed for each request:
+
+```
+[grpc-to-http] method=SayHello params={"name":"World"}
+[grpc-to-http] method=SayHello params={"name":"World"} POST http://localhost:8000/api/hello
+```
+
+The first line is printed on request entrance, the second line is printed once the HTTP request is constructed.
+
 ### Code Sample
 
 ```typescript
 // In a Vue component
+import { executeGrpcToHttp, grpcToHttpConfig } from '@yylego/grpc-to-http';
+
+// Enable debug mode (optional)
+grpcToHttpConfig.debug = true;
+
 const options: RpcOptions = {
     baseUrl: 'http://localhost:8000',
     meta: {

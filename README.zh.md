@@ -4,6 +4,10 @@
 
 ---
 
+![grpc-to-http-overview](assets/grpc-to-http-overview.svg)
+
+---
+
 ## 英文文档
 
 [ENGLISH README](README.md)
@@ -17,7 +21,7 @@
 - 自动将 snake_case 参数名转换为 camelCase
 - 轻量级，依赖极少
 
-## 工作原理
+## 设计思路
 
 使用 [protobuf-ts](https://github.com/timostamm/protobuf-ts) 生成 TypeScript gRPC 客户端时，生成的代码使用 `stackIntercept` 和 `UnaryCall` 进行 gRPC 传输。本包提供 `executeGrpcToHttp` 和 `GrpcToHttpPromise` 作为替代，通过 Axios 将请求转发到 HTTP/REST 端点。
 
@@ -41,11 +45,11 @@ npm install @yylego/grpc-to-http
 
 ## 使用
 
-在 protobuf-ts 生成的客户端文件中导入核心函数：
+从包中导入：
 
 ```typescript
-import { executeGrpcToHttp } from '@yylego/grpc-to-http/src/grpc-to-http';
-import type { GrpcToHttpPromise } from '@yylego/grpc-to-http/src/grpc-to-http';
+import { executeGrpcToHttp, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import type { GrpcToHttpPromise } from '@yylego/grpc-to-http';
 ```
 
 ### API
@@ -64,10 +68,52 @@ import type { GrpcToHttpPromise } from '@yylego/grpc-to-http/src/grpc-to-http';
 
 返回 `GrpcToHttpPromise<I, O>` — 解析为 Axios 响应的 Promise。
 
+**`grpcToHttpConfig`**
+
+配置对象。支持的选项：
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `debug` | `boolean` | `false` | 设为 `true` 时，在控制台打印请求详情 |
+
+**`GrpcToHttpException`**
+
+自定义异常类，在转换遇到问题时抛出（如缺少 HTTP 方法注解、缺少路径参数）。使用 `instanceof` 即可区分转换异常和网络异常：
+
+```typescript
+import { GrpcToHttpException } from '@yylego/grpc-to-http';
+
+try {
+    const response = await client.sayHello({ name: 'World' }, options);
+} catch (e) {
+    if (e instanceof GrpcToHttpException) {
+        console.log('转换异常:', e.message);
+    } else {
+        console.log('网络异常:', e);
+    }
+}
+```
+
+**调试输出**
+
+当 `grpcToHttpConfig.debug = true` 时，每次请求会打印两行日志：
+
+```
+[grpc-to-http] method=SayHello params={"name":"World"}
+[grpc-to-http] method=SayHello params={"name":"World"} POST http://localhost:8000/api/hello
+```
+
+第一行在请求入口处打印，第二行在构造完 HTTP 请求后打印。
+
 ### 示例
 
 ```typescript
 // 在 Vue 组件中
+import { executeGrpcToHttp, grpcToHttpConfig } from '@yylego/grpc-to-http';
+
+// 开启调试模式（可选）
+grpcToHttpConfig.debug = true;
+
 const options: RpcOptions = {
     baseUrl: 'http://localhost:8000',
     meta: {
