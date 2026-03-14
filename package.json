@@ -1,0 +1,58 @@
+{
+  "name": "@yylego/grpc-to-http",
+  "version": "0.0.1",
+  "description": "convert a TypeScript gRPC client into an HTTP client using Axios",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "index.ts",
+    "LICENSE",
+    "README.md",
+    "README.zh.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "type": "module",
+  "homepage": "https://github.com/yylego/grpc-to-http",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yylego/grpc-to-http.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yylego/grpc-to-http/issues"
+  },
+  "keywords": [
+    "protobuf-ts/plugin",
+    "Protocol Buffers",
+    "protobuf",
+    "TypeScript",
+    "protoc",
+    "gRPC-web",
+    "gRPC",
+    "grpc-to-http",
+    "axios"
+  ],
+  "author": "yylego",
+  "contributors": [
+    {
+      "name": "yyle88",
+      "url": "https://github.com/yyle88"
+    }
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@protobuf-ts/runtime-rpc": "^2.11.1",
+    "axios": "^1.13.6",
+    "url-join": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
