@@ -24,6 +24,7 @@
 - 通过 `google.api.http` 注解支持 GET/POST/PUT/PATCH/DELETE 方法，支持路径参数、`body: "*"` 和 `body: "<字段>"`
 - 自动将 snake_case 参数名转换为 camelCase
 - 服务端流式调用读取 Kratos v3 推送的 SSE，来一条交出一条
+- 客户端流式、双向流式调用走 Kratos v3 提供的 WebSocket
 - 轻量级，依赖极少
 
 ## 设计思路
@@ -71,8 +72,8 @@ npm install @yylego/grpc-to-http @protobuf-ts/grpcweb-transport
 从包中导入：
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
-import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, executeGrpcToHttpWebSocket, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpWebSocket, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
@@ -101,6 +102,29 @@ import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yy
 const stop = new AbortController(); // 调 stop.abort() 停止读取，比如页面关闭时
 for await (const resp of executeGrpcToHttpStream(method, { ...options, abort: stop.signal }, input)) {
     text += resp.delta;
+}
+```
+
+**`executeGrpcToHttpWebSocket<I, O>(method, options)`**
+
+通过 Kratos v3 提供的 WebSocket 执行客户端流式（`rpc X(stream Req) returns (Resp)`）或双向流式（`rpc X(stream Req) returns (stream Resp)`）调用。地址是 `google.api.http` 里的路径接在 `options.baseUrl` 后面，http 换成 ws、https 换成 wss。Kratos 会把这个地址里的路径参数绑进每一条消息，但生成的方法一开始没有输入、填不了这些值，所以 WebSocket 方法的路由不要带路径参数，值放进消息里。每条消息来回都是一帧 proto3 JSON 文字，跟 Kratos 读写的一样；`body: "<字段>"` 指向单个 message 类型的字段时，每一帧只发那个字段，跟 Kratos 的读法一致；别的 body（`*`、标量、repeated、map 字段）每一帧都是整条消息。类型是 `google.api.HttpBody` 的 body 字段（原始字节帧）不支持。
+
+返回 `GrpcToHttpWebSocket<I, O>`：
+
+| 成员 | 说明 |
+|------|------|
+| `send(message)` | 发一个 `I`；连接打开之前发的，打开后依次发出 |
+| `closeSend()` | 告诉 Kratos 不再发了，跟 gRPC 的 CloseSend 一样；还能接着读 |
+| `close()` | 关掉连接，`for await` 循环结束 |
+| `for await` | 逐个读 `O`；Kratos 结束这条流（关闭码 1000）时结束，中途 `break` 会马上断开连接 |
+
+浏览器建 WebSocket 时不能带自定义请求头，所以 `options.meta` 发不出去（打开 `grpcToHttpConfig.debug` 时，日志里会写出没带上的请求头）；同一个站点的 Cookie 会带上，不然就把令牌放在第一条消息里。`options.abort` 会关掉连接；`options.timeout` 不起作用。服务端报错时抛出 `AxiosError`，`response.data` 里是 Kratos 在报错帧里写的 `code`、`reason` 和 `message`（报错帧是一段文字，`metadata` 带不过来）。其它关闭，比如服务器关机时的 1001、网络断开时的 1006，抛出一个写明关闭码的 `Error`，调用方可以据此重连：
+
+```typescript
+const call = executeGrpcToHttpWebSocket(method, options);
+call.send({ roomCode: '1234' });
+for await (const state of call) {
+    render(state);
 }
 ```
 

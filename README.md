@@ -24,6 +24,7 @@ Convert a TypeScript gRPC client into an HTTP client using Axios.
 - GET/POST/PUT/PATCH/DELETE methods via `google.api.http` annotations, with path params, `body: "*"` and `body: "<field>"`
 - Snake_case to camelCase param name auto-conversion
 - Server-streaming methods read the Server-Sent Events that Kratos v3 sends, one message at a time
+- Client-streaming and duplex methods go through the WebSocket that Kratos v3 serves them on
 - Lightweight with minimum dependencies
 
 ## Design
@@ -71,8 +72,8 @@ The generated clients take the official `GrpcWebFetchTransport` from `@protobuf-
 Import from the package:
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
-import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, executeGrpcToHttpWebSocket, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpWebSocket, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
@@ -101,6 +102,29 @@ Returns `GrpcToHttpStream<I, O>` — an async iterable of `O`, to read with `for
 const stop = new AbortController(); // stop.abort() ends the reading, such as when the page closes
 for await (const resp of executeGrpcToHttpStream(method, { ...options, abort: stop.signal }, input)) {
     text += resp.delta;
+}
+```
+
+**`executeGrpcToHttpWebSocket<I, O>(method, options)`**
+
+Execute a client-streaming (`rpc X(stream Req) returns (Resp)`) or duplex (`rpc X(stream Req) returns (stream Resp)`) request through the WebSocket that Kratos v3 serves it on. The URL is the `google.api.http` path joined onto `options.baseUrl`, with http turned into ws and https into wss. Kratos binds the path params of that URL into each message, but the generated method takes no input up front to fill them, so give a WebSocket method a route with no path params and put the values in the messages. Each message goes both ways as one proto3 JSON text frame, as Kratos reads and writes them; with `body: "<field>"` naming one singular message field, each frame sent is just that field, as Kratos reads it, and with any other body (`*`, a scalar, repeated or map field) the frame is the whole message. A body field of type `google.api.HttpBody` (raw bytes frames) is not handled.
+
+Returns `GrpcToHttpWebSocket<I, O>`:
+
+| Member | Description |
+|--------|-------------|
+| `send(message)` | Sends one `I`; the ones sent before the connection opens go out once it opens |
+| `closeSend()` | Tells Kratos that no more input comes, as a gRPC CloseSend does; reading goes on |
+| `close()` | Closes the connection; the `for await` loop ends |
+| `for await` | Reads each `O`; ends when Kratos ends the stream (close code 1000), and a `break` closes the connection at once |
+
+Browsers cannot set headers on a WebSocket, so `options.meta` does not go out (with `grpcToHttpConfig.debug` on, the log line names the headers left out); cookies of the same site do, else carry a token in the first message. `options.abort` closes the connection; `options.timeout` has no effect. A Kratos fault throws an `AxiosError` whose `response.data` holds the `code`, `reason` and `message` that Kratos writes in its error frame (the frame is text, so `metadata` does not come along). Any other close, such as 1001 when the server shuts down or 1006 when the network drops, throws an `Error` naming the close code, so the caller can connect again:
+
+```typescript
+const call = executeGrpcToHttpWebSocket(method, options);
+call.send({ roomCode: '1234' });
+for await (const state of call) {
+    render(state);
 }
 ```
 

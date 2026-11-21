@@ -41,6 +41,21 @@ export type GrpcToHttpPromise<I, O> = Promise<AxiosResponse<O, AxiosRequestConfi
 export type GrpcToHttpStream<I, O> = AsyncGenerator<O, void, undefined>
 
 /**
+ * The WebSocket call that a client-streaming or duplex method gives: send input-param objects, read output-resp objects with `for await`.
+ *
+ * @template I - The type of the input-param object.
+ * @template O - The type of the output-resp object.
+ */
+export interface GrpcToHttpWebSocket<I, O> extends AsyncIterable<O> {
+  /** Sends one input-param object. The ones sent before the connection opens go out once it opens. */
+  send(message: I): void
+  /** Tells Kratos that no more input comes, as a gRPC CloseSend does; reading goes on. */
+  closeSend(): void
+  /** Closes the connection; the `for await` loop ends. */
+  close(): void
+}
+
+/**
  * The options of one request: the protobuf-ts RpcOptions plus the base URL that the proto paths join onto.
  */
 export interface GrpcToHttpOptions extends RpcOptions {
@@ -155,6 +170,172 @@ export async function* executeGrpcToHttpStream<I extends object, O extends objec
       yield readMessage(method, options, JSON.parse(sseEvent.data))
     }
   }
+}
+
+// The text frames that Kratos v3 adds to a WebSocket stream besides the messages: the end of the input, and an error before it closes.
+const websocketControlEnd = '\x1eend'
+const websocketControlError = '\x1eerror:'
+
+/**
+ * Performs a client-streaming or duplex gRPC method through the WebSocket that Kratos v3 serves it on.
+ * The URL is the path of the `google.api.http` rule joined onto `options.baseUrl`, with http turned into ws and https into wss.
+ * Kratos binds path params of that URL into each message, but the generated method takes no input up front to fill them,
+ * so the route of a WebSocket method has no path params and the values go in the messages.
+ * Each message goes both ways as one proto3 JSON text frame; with `body: "<field>"` naming one singular message field,
+ * each frame sent is just that field, as Kratos reads it, and with any other body the frame is the whole input.
+ * A body field of type google.api.HttpBody (raw bytes frames) is not handled.
+ *
+ * Browsers cannot set headers on a WebSocket, so `options.meta` does not go out; cookies of the same site do.
+ * Pass `options.abort` (an AbortSignal) to close the connection, such as when the page closes; `options.timeout` has no effect.
+ *
+ * The `for await` loop ends when Kratos closes the connection as normal, or when `close()` is called.
+ * A Kratos fault (the `\x1eerror:` frame) throws an AxiosError whose `response.data` holds the code, reason and message
+ * that Kratos wrote in the frame, the same shape as a unary method throws. A connection that closes in a fault throws an Error naming the close code.
+ *
+ * @template I - The type of the input-param object.
+ * @template O - The type of the output-resp object.
+ * @param method - The method information of the gRPC method.
+ * @param options - The options of the request, including the base URL and `abort`.
+ * @returns The call: `send` and `closeSend` to write, `for await` to read, `close` to stop.
+ * @throws GrpcToHttpException when the HTTP rule is wrong or its path has path params.
+ */
+export function executeGrpcToHttpWebSocket<I extends object, O extends object>(method: MethodInfo<I, O>, options: RpcOptions): GrpcToHttpWebSocket<I, O> {
+  const rule = (method.options['google.api.http'] ?? {}) as HttpRule
+  const httpMethod = httpVerbs.find((verb) => rule[verb] !== undefined)
+  if (!httpMethod) {
+    throw new GrpcToHttpException(`${method.name}: the method has no google.api.http rule`)
+  }
+  const { uriPath } = rewritePathParam(method, rule[httpMethod] ?? '', {})
+  const joinedURL = urlJoin((options as GrpcToHttpOptions).baseUrl ?? '', uriPath)
+  // a relative URL resolves against the page; with no page (SSR, Node) it needs an absolute baseUrl
+  if (!URL.canParse(joinedURL, globalThis.location?.href)) {
+    throw new GrpcToHttpException(`${method.name}: the WebSocket URL ${joinedURL} is relative and there is no page to resolve it, set an absolute baseUrl`)
+  }
+  const fullURL = new URL(joinedURL, globalThis.location?.href)
+  fullURL.protocol = fullURL.protocol === 'https:' ? 'wss:' : 'ws:'
+  if (grpcToHttpConfig.debug) {
+    const metaNames = Object.keys(options.meta ?? {})
+    console.debug(`[grpc-to-http] method=${method.name} WebSocket ${fullURL.href}${metaNames.length > 0 ? ` (a WebSocket cannot carry the meta headers ${metaNames.join(', ')})` : ''}`)
+  }
+  // as Kratos reads each frame: just the body field when it names one singular message field (WithStreamBodyField,
+  // which protoc-gen-go-http adds when BodyMessage holds), else the whole input, a scalar, repeated or map body field too
+  const bodyField = rule.body && rule.body !== '*' ? method.I.fields.find((field) => field.name === rule.body) : undefined
+  const bodyName = bodyField?.kind === 'message' && !bodyField.repeat ? bodyField.jsonName : undefined
+  const config: HttpRequestConfig = { method: 'get', url: fullURL.href, headers: {} }
+
+  const socket = new WebSocket(fullURL)
+  socket.binaryType = 'arraybuffer'
+  const unsent: string[] = [] // frames written before the connection opens
+  const received: O[] = []
+  let sendClosed = false
+  let finished: { fault?: unknown } | undefined = undefined
+  let wake: (() => void) | undefined = undefined
+
+  const finish = (fault?: unknown) => {
+    if (finished) return
+    finished = fault === undefined ? {} : { fault }
+    options.abort?.removeEventListener('abort', close)
+    wake?.()
+  }
+  const write = (text: string) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(text)
+    else unsent.push(text)
+  }
+  function close() {
+    sendClosed = true
+    finish()
+    socket.close(1000)
+  }
+
+  socket.onopen = () => {
+    for (const text of unsent.splice(0)) socket.send(text)
+  }
+  socket.onmessage = (event: MessageEvent<string | ArrayBuffer>) => {
+    const text = typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data)
+    if (text === websocketControlEnd) {
+      finish()
+    } else if (text.startsWith(websocketControlError)) {
+      const data = readKratosErrorText(text.slice(websocketControlError.length))
+      finish(newKratosFault(config, data.code, data, {}))
+    } else {
+      try {
+        received.push(readMessage(method, options, JSON.parse(text)))
+        wake?.()
+      } catch (cause) {
+        finish(cause instanceof GrpcToHttpException ? cause : new GrpcToHttpException(`${method.name}: the response is not ${method.O.typeName} JSON`, { cause }))
+        socket.close(1000)
+      }
+    }
+  }
+  socket.onclose = (event: CloseEvent) => {
+    // Kratos ends a stream with 1000; the rest (1001 when the server shuts down, 1006 when the network drops) cut it off
+    finish(event.code === 1000 ? undefined : new Error(`${method.name}: the WebSocket closed with code ${event.code} ${event.reason}`.trim()))
+  }
+  if (options.abort?.aborted) {
+    close()
+  } else {
+    options.abort?.addEventListener('abort', close, { once: true })
+  }
+
+  async function* read(): AsyncGenerator<O, void, undefined> {
+    try {
+      for (;;) {
+        const next = received.shift()
+        if (next !== undefined) {
+          yield next
+          continue
+        }
+        if (finished) {
+          if (finished.fault !== undefined) throw finished.fault
+          return
+        }
+        await new Promise<void>((resolve) => (wake = resolve))
+        wake = undefined
+      }
+    } finally {
+      // also closes the connection when the loop stops ahead of time (a break, an exception), as the server-streaming read does
+      close()
+    }
+  }
+
+  return {
+    send(message: I) {
+      // also after the connection ended (Kratos closed it, a fault), so a message never waits in a queue that cannot go out
+      if (sendClosed || finished) {
+        throw new GrpcToHttpException(`${method.name}: the WebSocket send side is closed`)
+      }
+      let json: JsonObject
+      try {
+        json = method.I.toJson(message, { ...jsonWriteOptions, ...options.jsonOptions }) as JsonObject
+      } catch (cause) {
+        throw new GrpcToHttpException(`${method.name}: cannot write ${method.I.typeName} as JSON`, { cause })
+      }
+      // an unset body field goes as a blank message, which Kratos reads as one
+      write(JSON.stringify(bodyName === undefined ? json : (json[bodyName] ?? {})))
+    },
+    closeSend() {
+      if (sendClosed) return
+      sendClosed = true
+      write(websocketControlEnd)
+    },
+    close,
+    [Symbol.asyncIterator]: read,
+  }
+}
+
+/**
+ * Reads the error text that Kratos writes in the `\x1eerror:` frame, the text of its Error():
+ * `error: code = 404 reason = NOT_FOUND message = gone metadata = map[] cause = <nil>`.
+ * Kratos writes text here (its SSE errors are JSON), so the text is the one source of the code, reason and message.
+ * The message stops at the first ` metadata = map[`, since the cause is often another Kratos error that has one too.
+ * A text in another form (a Go error that is not a Kratos error) counts as code 500 with no reason, as Kratos FromError reads it.
+ */
+function readKratosErrorText(text: string): { code: number; reason: string; message: string } {
+  const matched = /^error: code = (\d+) reason = (\S*) message = (.*?) metadata = map\[.*\] cause = .*$/s.exec(text)
+  if (!matched) {
+    return { code: 500, reason: '', message: text }
+  }
+  return { code: Number(matched[1]), reason: matched[2] ?? '', message: matched[3] ?? '' }
 }
 
 /**
