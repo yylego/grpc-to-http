@@ -69,11 +69,20 @@ npm install @yylego/grpc-to-http
 从包中导入：
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, GrpcToHttpTransport, grpcToHttpConfig } from '@yylego/grpc-to-http';
 import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
+
+**`new GrpcToHttpTransport(options)`**
+
+交给生成的 HTTP 客户端的 transport。它保存每个请求共用的选项（如 `baseUrl` 和 `meta` 里的请求头），并跟单次请求的选项合并。有了它，前端不用再从别的包里拿 transport：
+
+```typescript
+const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
+const client = new ArticleServiceClient(transport)
+```
 
 **`executeGrpcToHttp<I, O>(callType, transport, method, options, input)`**
 

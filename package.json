@@ -1,6 +1,6 @@
 {
   "name": "@yylego/grpc-to-http",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "convert a TypeScript gRPC client into an HTTP client using Axios",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
   "homepage": "https://github.com/yylego/grpc-to-http",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yylego/grpc-to-http.git"
+    "url": "git+https://github.com/yylego/grpc-to-http.git"
   },
   "bugs": {
     "url": "https://github.com/yylego/grpc-to-http/issues"

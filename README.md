@@ -69,11 +69,20 @@ npm install @yylego/grpc-to-http
 Import from the package:
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, GrpcToHttpTransport, grpcToHttpConfig } from '@yylego/grpc-to-http';
 import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
+
+**`new GrpcToHttpTransport(options)`**
+
+The transport to hand to a generated HTTP client. It holds the options that each request shares, such as `baseUrl` and the headers in `meta`, and merges them with the options of one request. With it a frontend needs no transport from a separate package:
+
+```typescript
+const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
+const client = new ArticleServiceClient(transport)
+```
 
 **`executeGrpcToHttp<I, O>(callType, transport, method, options, input)`**
 

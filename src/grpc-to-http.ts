@@ -1,5 +1,6 @@
 import type { JsonObject, JsonReadOptions, JsonValue, JsonWriteOptions } from '@protobuf-ts/runtime'
-import type { RpcTransport, RpcOptions, RpcMetadata, MethodInfo } from '@protobuf-ts/runtime-rpc'
+import { mergeRpcOptions } from '@protobuf-ts/runtime-rpc'
+import type { RpcTransport, RpcOptions, RpcMetadata, MethodInfo, UnaryCall, ServerStreamingCall, ClientStreamingCall, DuplexStreamingCall } from '@protobuf-ts/runtime-rpc'
 import axios, { AxiosError, AxiosHeaders } from 'axios'
 import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 import urlJoin from 'url-join'
@@ -50,6 +51,45 @@ export interface GrpcToHttpOptions extends RpcOptions {
   onUploadProgress?: AxiosRequestConfig['onUploadProgress']
 }
 
+/**
+ * The transport to hand to a generated HTTP client. It holds the options that each request shares, such as the base URL
+ * and the headers in `meta`, and merges them with the options of one request, the same as the protobuf-ts transports do.
+ * The generated HTTP clients send each request through executeGrpcToHttp and executeGrpcToHttpStream,
+ * so the call methods of this transport are unused and throw.
+ *
+ * @example
+ * const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
+ * const client = new ArticleServiceClient(transport)
+ */
+export class GrpcToHttpTransport implements RpcTransport {
+  constructor(private readonly defaultOptions: GrpcToHttpOptions = {}) {}
+
+  mergeOptions(options?: Partial<RpcOptions>): RpcOptions {
+    return mergeRpcOptions(this.defaultOptions, options)
+  }
+
+  unary<I extends object, O extends object>(method: MethodInfo<I, O>): UnaryCall<I, O> {
+    throw newUnusedCallException(method)
+  }
+
+  serverStreaming<I extends object, O extends object>(method: MethodInfo<I, O>): ServerStreamingCall<I, O> {
+    throw newUnusedCallException(method)
+  }
+
+  clientStreaming<I extends object, O extends object>(method: MethodInfo<I, O>): ClientStreamingCall<I, O> {
+    throw newUnusedCallException(method)
+  }
+
+  duplex<I extends object, O extends object>(method: MethodInfo<I, O>): DuplexStreamingCall<I, O> {
+    throw newUnusedCallException(method)
+  }
+}
+
+/** The exception of a call method on GrpcToHttpTransport: the method was not rewritten into an HTTP request. */
+function newUnusedCallException<I extends object, O extends object>(method: MethodInfo<I, O>): GrpcToHttpException {
+  return new GrpcToHttpException(`${method.service.typeName}/${method.name} is not rewritten into an HTTP request; generate the client with protoc-gen-kratos-ts-http`)
+}
+
 /** The HTTP verbs that a `google.api.http` rule can use. */
 type HttpVerb = 'get' | 'post' | 'put' | 'patch' | 'delete'
 
@@ -89,22 +129,14 @@ type HttpRequestConfig = AxiosRequestConfig & {
  * @throws The promise rejects with a GrpcToHttpException when the HTTP rule, a path param, the JSON form is wrong,
  * and with an AxiosError when the request fails.
  */
-export async function executeGrpcToHttp<I extends object, O extends object>(
-  _callType: string,
-  _transport: RpcTransport,
-  method: MethodInfo<I, O>,
-  options: RpcOptions,
-  input: I,
-): GrpcToHttpPromise<I, O> {
+export async function executeGrpcToHttp<I extends object, O extends object>(_callType: string, _transport: RpcTransport, method: MethodInfo<I, O>, options: RpcOptions, input: I): GrpcToHttpPromise<I, O> {
   // async, so a conversion exception rejects the promise as a network exception does, and .catch() sees both
   const axiosConfig = buildAxiosConfig(method, options, input)
   const { onUploadProgress } = options as GrpcToHttpOptions
   if (onUploadProgress) {
     axiosConfig.onUploadProgress = onUploadProgress
   }
-  const response = await axios.request<JsonValue, AxiosResponse<JsonValue, AxiosRequestConfig>>(
-    axiosConfig,
-  )
+  const response = await axios.request<JsonValue, AxiosResponse<JsonValue, AxiosRequestConfig>>(axiosConfig)
   return { ...response, data: readMessage(method, options, response.data) }
 }
 
@@ -125,11 +157,7 @@ export async function executeGrpcToHttp<I extends object, O extends object>(
  * @param input - The input-param object containing the request data.
  * @returns An async iterable of the output-resp objects, to read with `for await`.
  */
-export async function* executeGrpcToHttpStream<I extends object, O extends object>(
-  method: MethodInfo<I, O>,
-  options: RpcOptions,
-  input: I,
-): GrpcToHttpStream<I, O> {
+export async function* executeGrpcToHttpStream<I extends object, O extends object>(method: MethodInfo<I, O>, options: RpcOptions, input: I): GrpcToHttpStream<I, O> {
   const axiosConfig = buildAxiosConfig(method, options, input)
   // Kratos has no codec named event-stream, so it takes the JSON codec from the next item,
   // the same codec that unary methods get
@@ -151,12 +179,7 @@ export async function* executeGrpcToHttpStream<I extends object, O extends objec
   const response = await fetch(fullURL, init)
   if (!response.ok) {
     // the stream did not start, so the body holds a plain Kratos error object
-    throw newKratosFault(
-      axiosConfig,
-      response.status,
-      await readResponseJson(response),
-      Object.fromEntries(response.headers),
-    )
+    throw newKratosFault(axiosConfig, response.status, await readResponseJson(response), Object.fromEntries(response.headers))
   }
   if (!response.body) {
     throw new GrpcToHttpException(`${method.name}: Stream error - The response has no body`)
@@ -178,21 +201,14 @@ export async function* executeGrpcToHttpStream<I extends object, O extends objec
  * Builds the axios config of one request from the `google.api.http` rule of the method: the HTTP method, the URL with path params,
  * the query params, the body, and `options.meta` as headers.
  */
-function buildAxiosConfig<I extends object, O extends object>(
-  method: MethodInfo<I, O>,
-  options: RpcOptions,
-  input: I,
-): HttpRequestConfig {
+function buildAxiosConfig<I extends object, O extends object>(method: MethodInfo<I, O>, options: RpcOptions, input: I): HttpRequestConfig {
   const baseUrl = (options as GrpcToHttpOptions).baseUrl ?? ''
   // the protobuf-ts runtime keeps proto options as plain JSON, so this is the one place that names its shape
   const rule = (method.options['google.api.http'] ?? {}) as HttpRule
 
   const httpMethod = httpVerbs.find((verb) => rule[verb] !== undefined)
   if (!httpMethod) {
-    const reason =
-      Object.keys(rule).length === 0
-        ? 'Request error - No HTTP method defined in GRPC'
-        : 'Request error - Non GET/POST/PUT/PATCH/DELETE HTTP method defined in GRPC'
+    const reason = Object.keys(rule).length === 0 ? 'Request error - No HTTP method defined in GRPC' : 'Request error - Non GET/POST/PUT/PATCH/DELETE HTTP method defined in GRPC'
     throw new GrpcToHttpException(`${method.name}: ${reason}`)
   }
   // the JSON form of the input, with the field names as protojson writes them (the jsonName of each field)
@@ -200,16 +216,11 @@ function buildAxiosConfig<I extends object, O extends object>(
   try {
     message = method.I.toJson(input, { ...jsonWriteOptions, ...options.jsonOptions }) as JsonObject
   } catch (cause) {
-    throw new GrpcToHttpException(
-      `${method.name}: Request error - Cannot write ${method.I.typeName} as JSON`,
-      { cause },
-    )
+    throw new GrpcToHttpException(`${method.name}: Request error - Cannot write ${method.I.typeName} as JSON`, { cause })
   }
   // path params go into the path; as google.api.http says, the fields left go into the body, else into the query
   const { uriPath, pathNames } = rewritePathParam(method, rule[httpMethod] ?? '', message)
-  const restFields = Object.fromEntries(
-    Object.entries(message).filter(([name]) => !pathNames.includes(name)),
-  )
+  const restFields = Object.fromEntries(Object.entries(message).filter(([name]) => !pathNames.includes(name)))
 
   let searchParams: JsonObject | undefined = undefined
   let payload: JsonValue | undefined = undefined
@@ -221,9 +232,7 @@ function buildAxiosConfig<I extends object, O extends object>(
     // one field goes as the body, the rest go as the query
     const bodyName = findJsonName(method, bodyField)
     payload = message[bodyName]
-    searchParams = Object.fromEntries(
-      Object.entries(restFields).filter(([name]) => name !== bodyName),
-    )
+    searchParams = Object.fromEntries(Object.entries(restFields).filter(([name]) => name !== bodyName))
   } else {
     // no body, the fields go as the query
     searchParams = restFields
@@ -240,9 +249,7 @@ function buildAxiosConfig<I extends object, O extends object>(
   // while baseUrl '/' gives '//api/x', which browsers treat as host 'api' (protocol-relative URL).
   const fullURL = urlJoin(baseUrl, uriPath)
   if (grpcToHttpConfig.debug) {
-    console.debug(
-      `[grpc-to-http] method=${method.name} params=${JSON.stringify(message)} ${httpMethod.toUpperCase()} ${fullURL}`,
-    )
+    console.debug(`[grpc-to-http] method=${method.name} params=${JSON.stringify(message)} ${httpMethod.toUpperCase()} ${fullURL}`)
   }
 
   const axiosConfig: HttpRequestConfig = {
@@ -261,8 +268,7 @@ function buildAxiosConfig<I extends object, O extends object>(
   const { timeout } = options
   if (timeout !== undefined) {
     // milliseconds, else a Date deadline, as protobuf-ts defines it; a past deadline sets 1ms
-    axiosConfig.timeout =
-      timeout instanceof Date ? Math.max(timeout.getTime() - Date.now(), 1) : timeout
+    axiosConfig.timeout = timeout instanceof Date ? Math.max(timeout.getTime() - Date.now(), 1) : timeout
   }
   return axiosConfig
 }
@@ -271,28 +277,18 @@ function buildAxiosConfig<I extends object, O extends object>(
  * Reads one output-resp object from its JSON form. Content that is not that JSON, such as an HTML login page,
  * throws a GrpcToHttpException that names the method.
  */
-function readMessage<I extends object, O extends object>(
-  method: MethodInfo<I, O>,
-  options: RpcOptions,
-  data: unknown,
-): O {
+function readMessage<I extends object, O extends object>(method: MethodInfo<I, O>, options: RpcOptions, data: unknown): O {
   try {
     return method.O.fromJson(data as JsonValue, { ...jsonReadOptions, ...options.jsonOptions })
   } catch (cause) {
-    throw new GrpcToHttpException(
-      `${method.name}: Response error - The response is not ${method.O.typeName} JSON`,
-      { cause },
-    )
+    throw new GrpcToHttpException(`${method.name}: Response error - The response is not ${method.O.typeName} JSON`, { cause })
   }
 }
 
 /**
  * Finds the JSON name of a field from its proto name, as protojson writes it (lowerCamelCase, else the json_name option).
  */
-function findJsonName<I extends object, O extends object>(
-  method: MethodInfo<I, O>,
-  protoName: string,
-): string {
+function findJsonName<I extends object, O extends object>(method: MethodInfo<I, O>, protoName: string): string {
   return method.I.fields.find((field) => field.name === protoName)?.jsonName ?? protoName
 }
 
@@ -308,9 +304,7 @@ interface ServerSentEvent {
  * Reads Server-Sent Events from a response body: lines of `event:` and `data:` up to a blank line make one event.
  * An event with no `event:` line counts as `message`, as the SSE standard says.
  */
-async function* readServerSentEvents(
-  content: ReadableStream<Uint8Array>,
-): AsyncGenerator<ServerSentEvent, void, undefined> {
+async function* readServerSentEvents(content: ReadableStream<Uint8Array>): AsyncGenerator<ServerSentEvent, void, undefined> {
   const stream = content.getReader()
   const utf8 = new TextDecoder()
   let pending = '' // text received but not yet split into lines
@@ -351,12 +345,7 @@ async function* readServerSentEvents(
 /**
  * Builds the AxiosError that a unary method throws on the same Kratos fault, so one catch block handles both kinds of methods.
  */
-function newKratosFault(
-  config: HttpRequestConfig,
-  status: number,
-  data: unknown,
-  headers: Record<string, string>,
-): AxiosError {
+function newKratosFault(config: HttpRequestConfig, status: number, data: unknown, headers: Record<string, string>): AxiosError {
   const response: AxiosResponse = {
     data,
     status,
@@ -366,13 +355,7 @@ function newKratosFault(
   }
   // the same code that axios gives: 4xx is a bad request, 5xx a bad response
   const code = status < 500 ? AxiosError.ERR_BAD_REQUEST : AxiosError.ERR_BAD_RESPONSE
-  return new AxiosError(
-    `Request failed with status code ${status}`,
-    code,
-    response.config,
-    undefined,
-    response,
-  )
+  return new AxiosError(`Request failed with status code ${status}`, code, response.config, undefined, response)
 }
 
 /**
@@ -397,11 +380,7 @@ async function readResponseJson(response: Response): Promise<unknown> {
  * @returns The URI path with each path param replaced with its value, and the JSON names of the fields that went into the path.
  * @throws GrpcToHttpException when a path param is missing in the message.
  */
-function rewritePathParam<I extends object, O extends object>(
-  method: MethodInfo<I, O>,
-  uriPath: string,
-  message: JsonObject,
-): { uriPath: string; pathNames: string[] } {
+function rewritePathParam<I extends object, O extends object>(method: MethodInfo<I, O>, uriPath: string, message: JsonObject): { uriPath: string; pathNames: string[] } {
   const pathNames: string[] = []
   for (const param of uriPath.match(/{(\w+)}/g) ?? []) {
     const paramName = param.slice(1, -1)
