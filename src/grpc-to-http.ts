@@ -1,6 +1,5 @@
 import type { JsonObject, JsonReadOptions, JsonValue, JsonWriteOptions } from '@protobuf-ts/runtime'
-import { mergeRpcOptions } from '@protobuf-ts/runtime-rpc'
-import type { RpcTransport, RpcOptions, RpcMetadata, MethodInfo, UnaryCall, ServerStreamingCall, ClientStreamingCall, DuplexStreamingCall } from '@protobuf-ts/runtime-rpc'
+import type { RpcTransport, RpcOptions, RpcMetadata, MethodInfo } from '@protobuf-ts/runtime-rpc'
 import axios, { AxiosError, AxiosHeaders } from 'axios'
 import type { AxiosRequestConfig, AxiosResponse } from 'axios'
 import urlJoin from 'url-join'
@@ -49,45 +48,6 @@ export interface GrpcToHttpOptions extends RpcOptions {
   baseUrl?: string
   /** Reports the upload progress of one unary request (protobuf-ts names a one-response method unary), such as one that sends a big image. */
   onUploadProgress?: AxiosRequestConfig['onUploadProgress']
-}
-
-/**
- * The transport to hand to a generated HTTP client. It holds the options that each request shares, such as the base URL
- * and the headers in `meta`, and merges them with the options of one request, the same as the protobuf-ts transports do.
- * The generated HTTP clients send each request through executeGrpcToHttp and executeGrpcToHttpStream,
- * so the call methods of this transport are unused and throw.
- *
- * @example
- * const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
- * const client = new ArticleServiceClient(transport)
- */
-export class GrpcToHttpTransport implements RpcTransport {
-  constructor(private readonly defaultOptions: GrpcToHttpOptions = {}) {}
-
-  mergeOptions(options?: Partial<RpcOptions>): RpcOptions {
-    return mergeRpcOptions(this.defaultOptions, options)
-  }
-
-  unary<I extends object, O extends object>(method: MethodInfo<I, O>): UnaryCall<I, O> {
-    throw newUnusedCallException(method)
-  }
-
-  serverStreaming<I extends object, O extends object>(method: MethodInfo<I, O>): ServerStreamingCall<I, O> {
-    throw newUnusedCallException(method)
-  }
-
-  clientStreaming<I extends object, O extends object>(method: MethodInfo<I, O>): ClientStreamingCall<I, O> {
-    throw newUnusedCallException(method)
-  }
-
-  duplex<I extends object, O extends object>(method: MethodInfo<I, O>): DuplexStreamingCall<I, O> {
-    throw newUnusedCallException(method)
-  }
-}
-
-/** The exception of a call method on GrpcToHttpTransport: the method was not rewritten into an HTTP request. */
-function newUnusedCallException<I extends object, O extends object>(method: MethodInfo<I, O>): GrpcToHttpException {
-  return new GrpcToHttpException(`${method.service.typeName}/${method.name} is not rewritten into an HTTP request; generate the client with protoc-gen-kratos-ts-http`)
 }
 
 /** The HTTP verbs that a `google.api.http` rule can use. */
@@ -182,7 +142,7 @@ export async function* executeGrpcToHttpStream<I extends object, O extends objec
     throw newKratosFault(axiosConfig, response.status, await readResponseJson(response), Object.fromEntries(response.headers))
   }
   if (!response.body) {
-    throw new GrpcToHttpException(`${method.name}: Stream error - The response has no body`)
+    throw new GrpcToHttpException(`${method.name}: the stream response has no content`)
   }
 
   for await (const sseEvent of readServerSentEvents(response.body)) {
@@ -208,7 +168,7 @@ function buildAxiosConfig<I extends object, O extends object>(method: MethodInfo
 
   const httpMethod = httpVerbs.find((verb) => rule[verb] !== undefined)
   if (!httpMethod) {
-    const reason = Object.keys(rule).length === 0 ? 'Request error - No HTTP method defined in GRPC' : 'Request error - Non GET/POST/PUT/PATCH/DELETE HTTP method defined in GRPC'
+    const reason = Object.keys(rule).length === 0 ? 'the method has no google.api.http rule' : 'the google.api.http rule uses a custom verb, not get/post/put/patch/delete'
     throw new GrpcToHttpException(`${method.name}: ${reason}`)
   }
   // the JSON form of the input, with the field names as protojson writes them (the jsonName of each field)
@@ -216,7 +176,7 @@ function buildAxiosConfig<I extends object, O extends object>(method: MethodInfo
   try {
     message = method.I.toJson(input, { ...jsonWriteOptions, ...options.jsonOptions }) as JsonObject
   } catch (cause) {
-    throw new GrpcToHttpException(`${method.name}: Request error - Cannot write ${method.I.typeName} as JSON`, { cause })
+    throw new GrpcToHttpException(`${method.name}: cannot write ${method.I.typeName} as JSON`, { cause })
   }
   // path params go into the path; as google.api.http says, the fields left go into the body, else into the query
   const { uriPath, pathNames } = rewritePathParam(method, rule[httpMethod] ?? '', message)
@@ -281,7 +241,7 @@ function readMessage<I extends object, O extends object>(method: MethodInfo<I, O
   try {
     return method.O.fromJson(data as JsonValue, { ...jsonReadOptions, ...options.jsonOptions })
   } catch (cause) {
-    throw new GrpcToHttpException(`${method.name}: Response error - The response is not ${method.O.typeName} JSON`, { cause })
+    throw new GrpcToHttpException(`${method.name}: the response is not ${method.O.typeName} JSON`, { cause })
   }
 }
 
@@ -388,14 +348,14 @@ function rewritePathParam<I extends object, O extends object>(method: MethodInfo
     const value = message[jsonName]
     // an unset string comes as '', and a blank segment would reach a different route
     if (value === undefined || value === null || value === '') {
-      throw new GrpcToHttpException(`${method.name}: MISSING PARAMETER: ${paramName}`)
+      throw new GrpcToHttpException(`${method.name}: path param ${paramName} is missing`)
     }
     uriPath = uriPath.replace(param, encodeURIComponent(String(value)))
     pathNames.push(jsonName)
   }
   // a path param in a different form ({a.b}, {name=x/*}) would go out as-is and reach the wrong URL
   if (uriPath.includes('{')) {
-    throw new GrpcToHttpException(`${method.name}: UNSUPPORTED PATH PARAMETER: ${uriPath}`)
+    throw new GrpcToHttpException(`${method.name}: path param form not supported in ${uriPath}`)
   }
   return { uriPath, pathNames }
 }

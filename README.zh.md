@@ -61,28 +61,21 @@ import _ "github.com/go-kratos/kratos/contrib/encoding/json/v3"
 ## 安装
 
 ```bash
-npm install @yylego/grpc-to-http
+npm install @yylego/grpc-to-http @protobuf-ts/grpcweb-transport
 ```
+
+生成的客户端用官方 `@protobuf-ts/grpcweb-transport` 里的 `GrpcWebFetchTransport` 保存每个请求共用的选项，本包不另带 transport。
 
 ## 使用
 
 从包中导入：
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, GrpcToHttpTransport, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
 import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
-
-**`new GrpcToHttpTransport(options)`**
-
-交给生成的 HTTP 客户端的 transport。它保存每个请求共用的选项（如 `baseUrl` 和 `meta` 里的请求头），并跟单次请求的选项合并。有了它，前端不用再从别的包里拿 transport：
-
-```typescript
-const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
-const client = new ArticleServiceClient(transport)
-```
 
 **`executeGrpcToHttp<I, O>(callType, transport, method, options, input)`**
 
@@ -145,33 +138,40 @@ try {
 [grpc-to-http] method=SayHello params={"name":"World"} POST http://localhost:8000/api/hello
 ```
 
-参数原样打印，密码也会出现在控制台里，所以只在开发时打开。地址拼不出来时，抛出的 `GrpcToHttpException` 会带上接口名，比如 `GetArticle: MISSING PARAMETER: id`。
+参数原样打印，密码也会出现在控制台里，所以只在开发时打开。地址拼不出来时，抛出的 `GrpcToHttpException` 会带上接口名，比如 `GetArticle: path param id is missing`。
 
 ### 示例
 
 ```typescript
 // 在 Vue 组件中
+import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport';
 import { grpcToHttpConfig } from '@yylego/grpc-to-http';
-import type { GrpcToHttpOptions } from '@yylego/grpc-to-http';
+import { GreeterClient } from './rpc/greeter.client';
 
 // 开启调试模式（可选）
 grpcToHttpConfig.debug = true;
 
-const options: GrpcToHttpOptions = {
+// 每个请求共用的选项：服务地址和 meta 里的请求头
+const transport = new GrpcWebFetchTransport({
     baseUrl: 'http://localhost:8000',
-    meta: {
-        'Authorization': 'token-value-here'
-    }
-};
+    meta: { Authorization: 'token-value-here' },
+});
+const client = new GreeterClient(transport);
 
-// 生成的客户端自动使用 HTTP 而非 gRPC
-const response = await client.sayHello({ name: 'World' }, options);
+// 生成的客户端发的是 HTTP 请求，不是 gRPC
+const response = await client.sayHello({ name: 'World' });
 ```
 
 ## 代码检查
 
 ```bash
 npx tsc --noEmit
+```
+
+## 测试
+
+```bash
+npm test
 ```
 
 ## 发布

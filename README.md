@@ -61,28 +61,21 @@ import _ "github.com/go-kratos/kratos/contrib/encoding/json/v3"
 ## Setup
 
 ```bash
-npm install @yylego/grpc-to-http
+npm install @yylego/grpc-to-http @protobuf-ts/grpcweb-transport
 ```
+
+The generated clients take the official `GrpcWebFetchTransport` from `@protobuf-ts/grpcweb-transport`, which holds the options that each request shares; this package does not ship a transport of its own.
 
 ## Usage
 
 Import from the package:
 
 ```typescript
-import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, GrpcToHttpTransport, grpcToHttpConfig } from '@yylego/grpc-to-http';
+import { executeGrpcToHttp, executeGrpcToHttpStream, GrpcToHttpException, grpcToHttpConfig } from '@yylego/grpc-to-http';
 import type { GrpcToHttpPromise, GrpcToHttpStream, GrpcToHttpOptions } from '@yylego/grpc-to-http';
 ```
 
 ### API
-
-**`new GrpcToHttpTransport(options)`**
-
-The transport to hand to a generated HTTP client. It holds the options that each request shares, such as `baseUrl` and the headers in `meta`, and merges them with the options of one request. With it a frontend needs no transport from a separate package:
-
-```typescript
-const transport = new GrpcToHttpTransport({ baseUrl: 'http://localhost:8000', meta: { Authorization: token } })
-const client = new ArticleServiceClient(transport)
-```
 
 **`executeGrpcToHttp<I, O>(callType, transport, method, options, input)`**
 
@@ -145,33 +138,40 @@ When `grpcToHttpConfig.debug = true`, one line is printed with each request, onc
 [grpc-to-http] method=SayHello params={"name":"World"} POST http://localhost:8000/api/hello
 ```
 
-The params are printed as-is, passwords included, so keep the switch off outside development. When the URL cannot be built, the thrown `GrpcToHttpException` names the method, such as `GetArticle: MISSING PARAMETER: id`.
+The params are printed as-is, passwords included, so keep the switch off outside development. When the URL cannot be built, the thrown `GrpcToHttpException` names the method, such as `GetArticle: path param id is missing`.
 
 ### Code Sample
 
 ```typescript
 // In a Vue component
+import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport';
 import { grpcToHttpConfig } from '@yylego/grpc-to-http';
-import type { GrpcToHttpOptions } from '@yylego/grpc-to-http';
+import { GreeterClient } from './rpc/greeter.client';
 
 // Enable debug mode (optional)
 grpcToHttpConfig.debug = true;
 
-const options: GrpcToHttpOptions = {
+// The options that each request shares: the base URL and the headers in meta
+const transport = new GrpcWebFetchTransport({
     baseUrl: 'http://localhost:8000',
-    meta: {
-        'Authorization': 'token-value-here'
-    }
-};
+    meta: { Authorization: 'token-value-here' },
+});
+const client = new GreeterClient(transport);
 
-// The generated client uses HTTP instead of gRPC
-const response = await client.sayHello({ name: 'World' }, options);
+// The generated client sends HTTP requests instead of gRPC
+const response = await client.sayHello({ name: 'World' });
 ```
 
 ## Lint
 
 ```bash
 npx tsc --noEmit
+```
+
+## Test
+
+```bash
+npm test
 ```
 
 ## Publish

@@ -1,6 +1,6 @@
 {
   "name": "@yylego/grpc-to-http",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "convert a TypeScript gRPC client into an HTTP client using Axios",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,8 +14,9 @@
   ],
   "scripts": {
     "build": "tsc",
-    "format": "prettier --write index.ts src",
-    "prepublishOnly": "npm run build"
+    "test": "tsc -p tests && node --test tests/",
+    "format": "prettier --write index.ts src tests",
+    "prepublishOnly": "npm test && npm run build"
   },
   "type": "module",
   "homepage": "https://github.com/yylego/grpc-to-http",
@@ -55,6 +56,7 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "prettier": "3.10.1",
     "typescript": "^7.0.2"
   }
